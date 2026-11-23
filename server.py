@@ -1,6 +1,9 @@
 """Single Telegram connection, served privately to MCP clients on the VPS."""
 import asyncio
 import base64
+import functools
+import inspect
+import typing
 from contextlib import asynccontextmanager
 import hashlib
 import hmac
@@ -103,6 +106,61 @@ mcp = FastMCP(CONFIG['name'], stateless_http=True, json_response=True,
               'action (confirm_write=true, request_id, expected_chat). Always prefer a dedicated tool when one exists.')
 
 
+# Every tool accepts a chat as a numeric ID, a numeric string, "me", an exact @username or t.me/username
+# in chat_id / source_chat_id / destination_chat_id. Strings are resolved to the numeric peer ID first,
+# so the tools themselves keep working with verified numeric IDs.
+CHAT_REF_PARAMS = ('chat_id', 'source_chat_id', 'destination_chat_id')
+
+
+async def resolve_chat_ref(value):
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    text = str(value).strip()
+    if re.fullmatch(r'-?[0-9]+', text):
+        return int(text)
+    async with telegram() as client:
+        if text.lower() in ('me', 'self'):
+            return (await client.get_me()).id
+        return utils.get_peer_id(await client.get_entity(strict_reference(text)))
+
+
+def accept_chat_refs(fn):
+    hints = typing.get_type_hints(fn)
+    sig = inspect.signature(fn)
+    names = [n for n in CHAT_REF_PARAMS if hints.get(n) is int]
+    if not names:
+        return fn
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        bound = sig.bind_partial(*args, **kwargs)
+        for name in names:
+            if bound.arguments.get(name) not in (None, 0, '0', ''):
+                bound.arguments[name] = await resolve_chat_ref(bound.arguments[name])
+        return await fn(*bound.args, **bound.kwargs)
+
+    wrapper.__signature__ = sig.replace(
+        parameters=[p.replace(annotation=(int | str) if p.name in names else hints.get(p.name, p.annotation))
+                    for p in sig.parameters.values()],
+        return_annotation=hints.get('return', sig.return_annotation))
+    return wrapper
+
+
+_register_tool = mcp.tool
+
+
+def _tool(*args, **kwargs):
+    decorator = _register_tool(*args, **kwargs)
+
+    def apply(fn):
+        decorator(accept_chat_refs(fn))
+        return fn
+    return apply
+
+
+mcp.tool = _tool
+
+
 @asynccontextmanager
 async def telegram():
     global NEXT_REQUEST
@@ -180,6 +238,27 @@ async def mutate_once(request_id, payload, operation):
         database.close()
 
 
+PARSE_MODES = {'plain': None, 'markdown': 'md', 'md': 'md', 'html': 'html'}
+
+
+def parse_mode_of(parse_mode, mentions_used=False):
+    """'plain' (default), 'markdown' or 'html'. Named mentions need plain text with explicit ranges."""
+    key = (parse_mode or 'plain').lower()
+    if key not in PARSE_MODES:
+        raise ValueError("parse_mode must be 'plain', 'markdown' or 'html'")
+    if PARSE_MODES[key] and mentions_used:
+        raise ValueError("mentions require parse_mode='plain' (ranges refer to the literal text)")
+    return PARSE_MODES[key]
+
+
+def plain_text_of(text, mode):
+    """The text Telegram will store after parsing markdown/html formatting."""
+    if not mode:
+        return text
+    from telethon.extensions import html, markdown
+    return (markdown if mode == 'md' else html).parse(text)[0]
+
+
 @mcp.tool(annotations=READ)
 async def get_status() -> dict:
     """Check VPS Telegram authorization and client identity without exposing phone or credentials."""
@@ -213,13 +292,17 @@ async def get_status() -> dict:
 
 @mcp.tool(annotations=READ)
 async def list_chats(query: str = '', limit: int = 50, offset_id: int = 0,
-                     offset_date: str = '', offset_chat_id: int = 0) -> dict:
+                     offset_date: str = '', offset_chat_id: int = 0, offset_peer_id: int = 0,
+                     archived: bool | None = None) -> dict:
     """List one page of existing chats, optionally filtering names/usernames. A query filters this
     page only. Use the returned next_page arguments to continue; avoid unbounded enumeration."""
     from datetime import datetime
     limit_check(limit)
+    offset_chat_id = offset_chat_id or offset_peer_id
     async with telegram() as client:
         options = {'limit': limit, 'offset_id': offset_id}
+        if archived is not None:
+            options['archived'] = archived
         if offset_date:
             options['offset_date'] = datetime.fromisoformat(offset_date)
         if offset_chat_id:
@@ -311,11 +394,14 @@ async def read_messages(chat_id: int, limit: int = 30, before_message_id: int = 
 
 
 @mcp.tool(annotations=READ)
-async def search_messages(query: str, chat_id: int = 0, limit: int = 30, topic_id: int = 0) -> dict:
+async def search_messages(query: str, chat_id: int = 0, limit: int = 30, topic_id: int = 0,
+                          global_search: bool = False) -> dict:
     """Search message text in one chat, or across accessible cloud chats if chat_id is zero.
     Optional topic_id (from list_topics, 1 = General) restricts the search to one forum topic
-    and requires chat_id."""
+    and requires chat_id. global_search=true searches all chats (same as chat_id=0)."""
     limit_check(limit)
+    if global_search:
+        chat_id = 0
     if not query.strip():
         raise ValueError('A nonempty search query is required')
     if topic_id and not chat_id:
@@ -376,7 +462,8 @@ async def read_attachment(chat_id: int, message_id: int, offset: int = 0,
 @mcp.tool(annotations=WRITE)
 async def send_message(chat_id: int, expected_chat: str, text: str, request_id: str,
                        reply_to_message_id: int = 0, schedule_at: str = '',
-                       mentions: list[MentionSpec] | None = None, topic_id: int = 0) -> dict:
+                       mentions: list[MentionSpec] | None = None, topic_id: int = 0,
+                       parse_mode: str = 'plain', link_preview: bool = False) -> dict:
     """Send only a user-authorized message. First verify the recipient using get_chat.
     expected_chat must exactly match the name or @username. Use a unique request_id per intended
     message and reuse it on retry to prevent duplicate sends. No link preview. Optional mentions
@@ -387,17 +474,19 @@ async def send_message(chat_id: int, expected_chat: str, text: str, request_id: 
     Optional schedule_at is ISO 8601 WITH timezone, 30 seconds–365 days ahead. It schedules one
     Telegram message, not assistant tasks. Scheduled IDs belong to scheduled history, not normal history.
     Optional topic_id (from list_topics; 1 = General) posts into that forum topic; a
-    reply_to_message_id must then be in the same topic. The topic is read back and verified."""
+    reply_to_message_id must then be in the same topic. The topic is read back and verified.
+    parse_mode: 'plain' (default), 'markdown' or 'html'. link_preview shows a preview of the first link."""
     if not text.strip() or len(text) > 4096:
         raise ValueError('Message must contain 1–4096 characters')
     specs = normalize_mentions(text, mentions)
+    mode = parse_mode_of(parse_mode, bool(specs))
     async with telegram() as client:
         entity, record = await checked_entity(client, chat_id, expected_chat)
         topic, reply_to = await prepare_topic_send(client, entity, chat_id, topic_id, reply_to_message_id)
         async def send():
             when = parse_schedule(schedule_at) if schedule_at else None
             formatting = await input_mentions(client, entity, specs, verify_membership=True) if specs else []
-            message = await client.send_message(entity, text, parse_mode=None, link_preview=False,
+            message = await client.send_message(entity, text, parse_mode=mode, link_preview=link_preview,
                                                 reply_to=reply_to,
                                                 **({'formatting_entities': formatting} if specs else {}),
                                                 **({'schedule': when} if when else {}))
@@ -423,12 +512,15 @@ async def send_message(chat_id: int, expected_chat: str, text: str, request_id: 
             payload += ['mentions', mention_signature(specs)]
         if topic_id:
             payload += ['topic', topic_id]
+        if mode or link_preview:
+            payload += ['format', mode, link_preview]
         return await mutate_once(request_id, payload, send)
 
 
 @mcp.tool(annotations=WRITE)
 async def edit_message(chat_id: int, expected_chat: str, message_id: int,
-                       text: str, expected_text: str, mentions: list[MentionSpec] | None = None) -> dict:
+                       text: str, expected_text: str, mentions: list[MentionSpec] | None = None,
+                       parse_mode: str = 'plain', link_preview: bool | None = None) -> dict:
     """Correct an OWN sent message's plain text or attachment caption only with user authorization.
     First use get_message; pass its exact current text as expected_text to reject stale edits.
     Preserves message ID and attachment bytes; does not send a replacement message. Telegram's
@@ -438,9 +530,13 @@ async def edit_message(chat_id: int, expected_chat: str, message_id: int,
     mentions=[] deliberately removes all named mentions; a nonempty list replaces them and uses
     {user_id, expected_user, offset, length}, with UTF-16 ranges, as in send_message.
     Other existing formatting is replaced by plain text. Maximum 4096 characters
-    for text, 1024 for a file caption; empty text is allowed only to remove a caption."""
+    for text, 1024 for a file caption; empty text is allowed only to remove a caption.
+    parse_mode: 'plain' (default), 'markdown' or 'html'; then text is the formatted source and the
+    stored plain text is verified. link_preview: keep the current preview state when omitted."""
     if message_id <= 0:
         raise ValueError('message_id must be positive')
+    mode = parse_mode_of(parse_mode, bool(mentions))
+    source, text = text, plain_text_of(text, mode)
     async with telegram() as client:
         entity, record = await checked_entity(client, chat_id, expected_chat)
         before = await client.get_messages(entity, ids=message_id)
@@ -457,6 +553,8 @@ async def edit_message(chat_id: int, expected_chat: str, message_id: int,
             raise ValueError(f'Text is empty or exceeds the {maximum}-character limit')
         specs = (preserve_mentions(before.message or '', text, before) if mentions is None
                  else normalize_mentions(text, mentions))
+        if mode and specs:
+            raise ValueError("This message has named mentions; edit it with parse_mode='plain'")
         if mentions is None and (before.message or '') == text:
             verify_edit_retry(PRIVATE, chat_id, message_id, text, expected_text, mention_records(before))
         if (before.message or '') == text and mention_signature(mention_records(before)) == mention_signature(specs):
@@ -473,9 +571,12 @@ async def edit_message(chat_id: int, expected_chat: str, message_id: int,
         if specs or mention_records(before):
             remember_edit(PRIVATE, chat_id, message_id, text, expected_text, specs)
         try:
-            await client.edit_message(entity, message_id, text, parse_mode=None,
-                                      formatting_entities=formatting,
-                                      link_preview=bool(before.web_preview))
+            preview = bool(before.web_preview) if link_preview is None else link_preview
+            if mode:
+                await client.edit_message(entity, message_id, source, parse_mode=mode, link_preview=preview)
+            else:
+                await client.edit_message(entity, message_id, text, parse_mode=None,
+                                          formatting_entities=formatting, link_preview=preview)
         except MessageNotModifiedError:
             pass  # Another request may already have applied the same desired text; verify below.
         except MessageAuthorRequiredError:

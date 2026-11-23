@@ -314,12 +314,18 @@ def register_admin_tools(mcp, private, telegram, checked_entity, mutate_once, re
             return await mutate_once(request_id, ['remove_chat_member', chat_id, target.id], action)
 
     @mcp.tool(annotations=write)
-    async def create_invite_link(chat_id: int, expected_chat: str, request_id: str,
-                                 expire_hours: int = 24, usage_limit: int = 1,
-                                 title: str = '', join_request: bool = False) -> dict:
+    async def create_invite_link(chat_id: int, expected_chat: str, request_id: str = '',
+                                 expire_hours: int | None = 24, usage_limit: int | None = 1,
+                                 title: str | None = '', join_request: bool = False) -> dict:
         """Create a user-requested invite link; never send it automatically. Defaults: 24 hours,
         one use. Set usage_limit=0 for unlimited uses only if requested; join requests cannot have
-        usage limits. Stable request_id returns the same link on retry. The link is private data."""
+        usage limits. Stable request_id returns the same link on retry (without one, every call creates
+        a new link). The link is private data."""
+        import uuid
+        request_id = request_id or 'invite-' + uuid.uuid4().hex
+        expire_hours = 24 if expire_hours is None else expire_hours
+        usage_limit = 1 if usage_limit is None else usage_limit
+        title = title or ''
         if not 1 <= expire_hours <= 8760 or not 0 <= usage_limit <= 100000 or len(title) > 32:
             raise ValueError('expire_hours 1–8760, usage_limit 0–100000, title at most 32 characters')
         async with telegram() as client:

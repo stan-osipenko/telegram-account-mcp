@@ -50,6 +50,8 @@ Telegram ships new API methods all the time. Writing a dedicated tool for each o
 
 Only one process may own the Telegram session. Do not start a second Telethon client on a copied session file.
 
+**Updates** come from GitHub: on the server the service directory is a git checkout. `./deploy.sh` fetches, fast-forwards, runs the tests (rolls back on failure), waits for running watcher jobs, restarts the service and prints `get_status`.
+
 `rpc.py TOOL < args.json` calls a tool on the running server from a shell on the same machine.
 
 ## Tests

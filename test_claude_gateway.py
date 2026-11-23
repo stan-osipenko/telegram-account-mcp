@@ -6,7 +6,7 @@ os.environ.setdefault('MCP_PUBLIC_HOST', 'tg.example.com')
 
 import httpx
 from starlette.testclient import TestClient
-from claude_gateway import create_app, MAX_BODY
+from claude_gateway import create_app, MAX_BODY, UPSTREAM
 
 PUBLIC = 'p' * 64
 PRIVATE = 'b' * 64
@@ -36,7 +36,7 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(response.json(), {'ok': True})
         sent = self.requests[0]
         self.assertEqual(sent.headers['Authorization'], 'Bearer ' + PRIVATE)
-        self.assertEqual(str(sent.url), 'http://127.0.0.1:18765/mcp')
+        self.assertEqual(str(sent.url), UPSTREAM)
         self.assertNotIn('cookie', sent.headers)
         self.assertNotIn('origin', sent.headers)
         self.assertNotIn('x-forwarded-host', sent.headers)

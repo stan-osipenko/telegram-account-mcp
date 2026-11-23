@@ -1,0 +1,23 @@
+# Секреты и состояние — только на сервере
+private/
+private-delivery/
+*.sqlite3
+*.session
+.env
+.venv/
+__pycache__/
+
+# Личные журналы, скриншоты, бэкапы, переписка
+OPERATIONS.md
+*_Context.md
+evidence/
+references/
+backups/
+mentions-v150-readonly-check.json
+
+# Одноразовые проверки и настройки под конкретный сервер и аккаунт
+verify*.py
+cleanup_admin_test.py
+configure_claude_https.py
+claude-https.caddy
+stan-vps-tg*.service

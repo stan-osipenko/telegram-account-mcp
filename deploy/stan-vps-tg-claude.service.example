@@ -1,0 +1,23 @@
+[Unit]
+Description=Stan_VPS_tg authenticated HTTPS gateway for Claude
+After=network-online.target stan-vps-tg.service
+Wants=network-online.target
+Requires=stan-vps-tg.service
+PartOf=stan-vps-tg.service
+
+[Service]
+Type=simple
+User=tgmcp
+Group=tgmcp
+WorkingDirectory=/home/tgmcp/services/stan-vps-tg
+ExecStart=/home/tgmcp/services/stan-vps-tg/.venv/bin/python /home/tgmcp/services/stan-vps-tg/claude_gateway.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

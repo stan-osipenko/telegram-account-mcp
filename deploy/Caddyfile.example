@@ -1,0 +1,27 @@
+tg.example.com {
+    log {
+        output discard
+    }
+    @mcp path /mcp
+    handle @mcp {
+        route {
+            request_body {
+                max_size 2097152
+                read_timeout 180s
+                write_timeout 180s
+            }
+            reverse_proxy 127.0.0.1:18767 {
+                flush_interval -1
+                transport http {
+                    dial_timeout 5s
+                    response_header_timeout 180s
+                    read_timeout 180s
+                    write_timeout 180s
+                }
+            }
+        }
+    }
+    handle {
+        respond 404
+    }
+}

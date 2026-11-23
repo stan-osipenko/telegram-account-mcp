@@ -1,0 +1,24 @@
+[Unit]
+Description=Stan_VPS_tg private Telegram MCP
+After=network-online.target
+Wants=network-online.target stan-vps-tg-tunnel.service
+
+[Service]
+Type=simple
+User=tgmcp
+Group=tgmcp
+WorkingDirectory=/home/tgmcp/services/stan-vps-tg
+ExecStart=/home/tgmcp/services/stan-vps-tg/.venv/bin/python /home/tgmcp/services/stan-vps-tg/server.py
+ExecStartPost=/home/tgmcp/services/stan-vps-tg/.venv/bin/python /home/tgmcp/services/stan-vps-tg/wait_ready.py
+TimeoutStartSec=60
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/tgmcp/services/stan-vps-tg/private
+
+[Install]
+WantedBy=multi-user.target

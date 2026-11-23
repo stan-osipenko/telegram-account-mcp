@@ -58,7 +58,7 @@ Only one process may own the Telegram session. Do not start a second Telethon cl
 
 Every account runs its own copy of the same code: its own process (or container), its own `private/` directory with the Telegram session, tokens and receipts, and its own `private/instance.json`. The code has nothing account-specific in it. See `instance.py` for the settings: service name, session file, `expected_account_id` (the server refuses to start for another account), host and port, allowed hosts and origins, `auto_unread_mark`, and the OAuth gateway values.
 
-A new release is one `git pull` per instance, so every account gets the same features.
+A new release is one `git pull` per instance, so every account gets the same features. For instances in Docker containers under supervisord, `deploy/update-container.sh HOST_DIR CONTAINER CONTAINER_DIR PROGRAM...` does fetch, tests inside the container, rollback on failure, restart and `get_status`.
 
 ### Access for ChatGPT and other OAuth clients
 

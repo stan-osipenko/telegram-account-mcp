@@ -165,6 +165,11 @@ class AdminTests(unittest.IsolatedAsyncioTestCase):
         react=self.tools['set_reaction']
         self.assertEqual((await react(-1000000000100,'Test',10,'👍'))['reaction'],'👍')
         self.assertIsNone((await react(-1000000000100,'Test',10,None))['reaction'])
+        custom=await react(-1000000000100,'Test',10,custom_emoji_id=5386367538735104399)
+        self.assertTrue(custom['verified']); self.assertEqual(custom['custom_emoji_id'],5386367538735104399)
+        self.assertIsInstance(self.fake.messages[10].reactions.results[0].reaction,types.ReactionCustomEmoji)
+        with self.assertRaises(ValueError): await react(-1000000000100,'Test',10,'👍',custom_emoji_id=1)
+        self.assertTrue((await react(-1000000000100,'Test',10))['verified'])
         result=await self.tools['edit_chat_info'](-1000000000100,'Test',title='New',about='Description')
         self.assertTrue(result['verified'])
 

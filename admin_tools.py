@@ -388,23 +388,39 @@ def register_admin_tools(mcp, private, telegram, checked_entity, mutate_once, re
             raise RuntimeError('Requested pinned state not confirmed')
 
     @mcp.tool(annotations=write)
-    async def set_reaction(chat_id: int, expected_chat: str, message_id: int, emoji: str | None = None) -> dict:
-        """Set the account's one standard emoji reaction, or remove its reactions with emoji=null.
-        Requires user authorization and exact message/chat. Allowed emoji depend on Telegram/chat.
+    async def set_reaction(chat_id: int, expected_chat: str, message_id: int, emoji: str | None = None,
+                           custom_emoji_id: int | None = None) -> dict:
+        """Set the account's one reaction on a message, or remove its reactions (no emoji and no
+        custom_emoji_id). Requires user authorization and the exact message/chat.
+        emoji: a standard emoji. custom_emoji_id: a Premium custom emoji (document id), for example
+        the owner's own "in progress" reaction; find ids with invoke_mtproto messages.getRecentReactions
+        (+ messages.getCustomEmojiDocuments for their meaning). Allowed reactions depend on the chat.
         Returns the verified own selected reaction, not other people's reactions."""
+        if emoji is not None and custom_emoji_id is not None:
+            raise ValueError('Give emoji or custom_emoji_id, not both')
         if emoji is not None and (not emoji.strip() or len(emoji) > 16):
-            raise ValueError('Provide one standard emoji or null; custom emoji are not supported')
+            raise ValueError('Provide one standard emoji, a custom_emoji_id, or neither to remove')
+        if custom_emoji_id is not None and custom_emoji_id <= 0:
+            raise ValueError('custom_emoji_id must be a positive document id')
+        if custom_emoji_id:
+            wanted = [types.ReactionCustomEmoji(document_id=custom_emoji_id)]
+        else:
+            wanted = [types.ReactionEmoji(emoji)] if emoji else []
+
+        def key(reaction):
+            return getattr(reaction, 'emoticon', None) or getattr(reaction, 'document_id', None)
+
         async with telegram() as client:
             entity, record = await checked_entity(client, chat_id, expected_chat)
             await exact_message(client, entity, message_id)
-            await client(functions.messages.SendReactionRequest(peer=entity, msg_id=message_id,
-                         reaction=[types.ReactionEmoji(emoji)] if emoji else []))
+            await client(functions.messages.SendReactionRequest(peer=entity, msg_id=message_id, reaction=wanted))
             for attempt in range(5):
                 after = await exact_message(client, entity, message_id)
-                selected = [getattr(r.reaction, 'emoticon', None) for r in (getattr(after.reactions, 'results', None) or [])
+                selected = [key(r.reaction) for r in (getattr(after.reactions, 'results', None) or [])
                             if r.chosen_order is not None]
-                if selected == ([emoji] if emoji else []):
-                    return {'chat': record, 'message_id': message_id, 'reaction': emoji, 'verified': True}
+                if selected == [key(r) for r in wanted]:
+                    return {'chat': record, 'message_id': message_id, 'reaction': emoji,
+                            'custom_emoji_id': custom_emoji_id, 'verified': True}
                 if attempt < 4:
                     await asyncio.sleep(.8)
             raise RuntimeError('Own reaction not confirmed; inspect the message')

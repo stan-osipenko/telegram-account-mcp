@@ -1,4 +1,5 @@
-"""Автопометка «непрочитано» (1.8.0, 23.11.2026, по просьбе Стэна).
+"""Автопометка «непрочитано» (1.8.0, 23.11.2026, по просьбе Стэна; с 1.11.0 включается в instance.json:
+"auto_unread_mark": true).
 
 После каждого сообщения, отправленного от аккаунта Стэна через коннектор (send_message, send_file,
 forward_messages, edit_message), чат помечается вручную непрочитанным (синяя точка в Telegram),
@@ -10,7 +11,12 @@ from __future__ import annotations
 from telethon import functions, types
 
 
+ENABLED = False
+
+
 async def flag_unread(client, entity) -> dict:
+    if not ENABLED:
+        return {}
     try:
         peer = types.InputDialogPeer(await client.get_input_entity(entity))
         await client(functions.messages.MarkDialogUnreadRequest(peer=peer, unread=True))

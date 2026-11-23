@@ -8,10 +8,11 @@ from mcp.client.streamable_http import streamablehttp_client
 
 
 async def main():
-    token = (Path(__file__).resolve().parent / 'private/mcp-token').read_text().strip()
+    from instance import CONFIG, PRIVATE
+    token = (PRIVATE / 'mcp-token').read_text().strip()
     tool = sys.argv[1]
     arguments = json.loads(sys.stdin.read() or '{}')
-    async with streamablehttp_client('http://127.0.0.1:18765/mcp',
+    async with streamablehttp_client(f"http://127.0.0.1:{CONFIG['port']}/mcp",
             headers={'Authorization':'Bearer '+token}) as (reader, writer, _):
         async with ClientSession(reader, writer) as session:
             await session.initialize()

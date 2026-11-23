@@ -3,10 +3,12 @@ import time
 from urllib.request import urlopen
 from urllib.error import HTTPError, URLError
 
+from instance import CONFIG
+
 deadline = time.monotonic() + 45
 while time.monotonic() < deadline:
     try:
-        with urlopen('http://127.0.0.1:18765/mcp', timeout=1):
+        with urlopen(f"http://127.0.0.1:{CONFIG['port']}/mcp", timeout=1):
             pass
     except HTTPError as error:
         if error.code == 401:

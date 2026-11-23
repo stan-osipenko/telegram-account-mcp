@@ -6,6 +6,8 @@ import hmac
 import os
 from pathlib import Path
 
+from instance import CONFIG, PRIVATE
+
 import httpx
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -14,8 +16,8 @@ import uvicorn
 
 # Public HTTPS host name of this gateway: env MCP_PUBLIC_HOST, else private/public-host.
 PUBLIC_HOST = (os.environ.get('MCP_PUBLIC_HOST') or
-               (Path(__file__).resolve().parent / 'private/public-host').read_text().strip()).lower()
-UPSTREAM = 'http://127.0.0.1:18765/mcp'
+               (PRIVATE / 'public-host').read_text().strip()).lower()
+UPSTREAM = f"http://127.0.0.1:{CONFIG['port']}/mcp"
 MAX_BODY = 2 * 1024 * 1024
 REQUEST_HEADERS = {'accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'}
 RESPONSE_HEADERS = {'content-type', 'mcp-session-id', 'mcp-protocol-version', 'cache-control',
@@ -73,7 +75,7 @@ def create_app(public_token, backend_token, *, transport=None):
 
 if __name__ == '__main__':
     os.umask(0o077)
-    private = Path(__file__).resolve().parent / 'private'
+    private = PRIVATE
     app = create_app((private / 'claude-mcp-token').read_text().strip(),
                      (private / 'mcp-token').read_text().strip())
     uvicorn.run(app, host='127.0.0.1', port=18767, access_log=False, log_level='critical')

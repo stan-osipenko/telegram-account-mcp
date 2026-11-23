@@ -205,7 +205,7 @@ class RawTests(unittest.IsolatedAsyncioTestCase):
                                                           'get_me': lambda s: _me()})()):
             status = await server.get_status()
         self.assertEqual(status['tool_count'], len(listing))
-        self.assertEqual(status['service_version'], '1.10.1')
+        self.assertEqual(status['service_version'], server.SERVICE_VERSION)
 
 
 async def _me():

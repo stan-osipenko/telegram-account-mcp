@@ -54,6 +54,22 @@ Only one process may own the Telegram session. Do not start a second Telethon cl
 
 `rpc.py TOOL < args.json` calls a tool on the running server from a shell on the same machine.
 
+## Several accounts from one codebase
+
+Every account runs its own copy of the same code: its own process (or container), its own `private/` directory with the Telegram session, tokens and receipts, and its own `private/instance.json`. The code has nothing account-specific in it. See `instance.py` for the settings: service name, session file, `expected_account_id` (the server refuses to start for another account), host and port, allowed hosts and origins, `auto_unread_mark`, and the OAuth gateway values.
+
+A new release is one `git pull` per instance, so every account gets the same features.
+
+### Access for ChatGPT and other OAuth clients
+
+`oauth_gateway.py` is a public HTTPS front for one owner:
+- a web page to log in to Telegram (phone, code, 2FA), opened with a one-time bootstrap link;
+- OAuth 2.1 with PKCE and dynamic client registration (`oauth.py`): 1-hour access tokens, rotating 30-day refresh tokens, scope `telegram`, resource bound to `/mcp`;
+- a consent page protected by a separate connection password;
+- a proxy to the private MCP backend.
+
+`claude_gateway.py` is the simpler alternative: a static bearer token.
+
 ## Tests
 
 ```sh

@@ -35,7 +35,7 @@ from topics import (message_topic_id, read_topic, search_topic, prepare_topic_se
 from instance import CONFIG, PRIVATE
 
 BASE = Path(__file__).resolve().parent
-SERVICE_VERSION = '1.11.0'
+SERVICE_VERSION = '1.12.0'
 unread_mark.ENABLED = bool(CONFIG['auto_unread_mark'])
 LOCK = asyncio.Lock()
 CLIENT = None
@@ -87,7 +87,9 @@ mcp = FastMCP(CONFIG['name'], stateless_http=True, json_response=True,
               'For forwarding existing files use forward_messages directly on the VPS; do not download '
               'and re-upload them. Use view_attachment for images, '
               'read_attachment for raw file bytes, and begin_attachment_upload/append_attachment_upload/'
-              'send_file for new files. Reads do not mark messages read. '
+              'send_file for new files; for a file at an HTTPS link (e.g. ElevenLabs speech) use '
+              'upload_attachment_from_url (convert=voice for voice messages) instead of base64 chunks. '
+              'Reads do not mark messages read. '
               + UNREAD_NOTE +
               'Otherwise use mark_chat_unread only when the user requests changing the manual unread reminder. '
               'Use edit_message for authorized corrections to own sent text/captions, after get_message. '
@@ -266,7 +268,7 @@ async def get_status() -> dict:
         me = await client.get_me()
         return {'service': CONFIG['name'], 'location': 'VPS', 'authorized': bool(me),
                 'account_id': me.id, 'account_name': utils.get_display_name(me),
-                'mac_required': False, 'service_version': SERVICE_VERSION, 'tool_count': 37,
+                'mac_required': False, 'service_version': SERVICE_VERSION, 'tool_count': 38,
                 'raw_mtproto': {'invoke_tool': 'invoke_mtproto', 'describe_tool': 'describe_mtproto',
                                 'usage_stats_tool': 'get_raw_usage_stats',
                                 'writes_require': ['confirm_write', 'request_id', 'expected_chat'],
@@ -287,7 +289,8 @@ async def get_status() -> dict:
                                                         'send_message', 'send_file'],
                                  'message_field': 'topic_id'},
                 'file_operations': ['read_attachment', 'view_attachment', 'forward_messages',
-                                    'begin_attachment_upload', 'append_attachment_upload', 'send_file']}
+                                    'begin_attachment_upload', 'append_attachment_upload',
+                                    'upload_attachment_from_url', 'send_file']}
 
 
 @mcp.tool(annotations=READ)
@@ -594,6 +597,10 @@ async def edit_message(chat_id: int, expected_chat: str, message_id: int,
 
 from attachments import register_attachment_tools
 register_attachment_tools(mcp, PRIVATE, telegram, checked_entity, mutate_once, READ, WRITE)
+from attachments import UploadStore
+from url_upload import register_url_upload_tool
+register_url_upload_tool(mcp, PRIVATE, UploadStore(PRIVATE / 'uploads'), CONFIG,
+                         ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 register_admin_tools(mcp, PRIVATE, telegram, checked_entity, mutate_once, READ, WRITE,
                      chat_record, message_record, dialog_state)
 from chat_photo import register_chat_photo_tools

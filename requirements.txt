@@ -2,3 +2,4 @@ telethon==1.45.0
 mcp==1.30.0
 Pillow==12.3.0
 qrcode[pil]==8.2
+av==13.1.0

@@ -9,7 +9,7 @@ It is built for daily, real use by one owner. Safety checks are part of each too
 | Area | Tools |
 |---|---|
 | Reading | `list_chats`, `get_chat`, `read_messages`, `search_messages`, `get_message`, `get_chat_members`, `search_people`, `get_message_readers`, `list_topics` |
-| Files | `read_attachment`, `view_attachment` (native image content), `forward_messages`, `begin_attachment_upload` → `append_attachment_upload` → `send_file` (also `as_voice=true` for voice messages) |
+| Files | `read_attachment`, `view_attachment` (native image content), `forward_messages`, `begin_attachment_upload` → `append_attachment_upload` → `send_file` (also `as_voice=true` for voice messages); `upload_attachment_from_url` lets the VPS download a file from an allowlisted HTTPS link (ElevenLabs by default, more via `url_upload_hosts` in `instance.json`), optionally `convert="voice"` → OGG/Opus |
 | Writing | `send_message` (scheduled sends, mentions without usernames, forum topics), `edit_message`, `delete_messages`, `set_reaction`, `pin_message` |
 | Dialog state | `mark_chat_unread`, `mark_read`. Reads never mark anything as read |
 | Administration | `create_chat` (also forums), `create_topic`, `add_chat_members`, `remove_chat_member`, `create_invite_link`, `edit_chat_info`, `join_chat`, `set_chat_photo`, `delete_chat_photo`, `set_bot_photo` |

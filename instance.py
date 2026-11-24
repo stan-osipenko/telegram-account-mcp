@@ -17,7 +17,8 @@ instance.json (every key is optional):
   "public_url": "https://...",      # OAuth gateway: public base URL
   "gateway_port": 18786,            # OAuth gateway port
   "mcp_program": "mcp",             # supervisor program the OAuth gateway starts after login
-  "setup_cookie": "__Host-tgmcp-setup"
+  "setup_cookie": "__Host-tgmcp-setup",
+  "url_upload_hosts": ["cdn.example.com"]  # extra hosts for upload_attachment_from_url
 }
 """
 from __future__ import annotations
@@ -43,6 +44,7 @@ DEFAULTS = {
     'gateway_port': 18786,
     'mcp_program': 'mcp',
     'setup_cookie': '__Host-tgmcp-setup',
+    'url_upload_hosts': None,
 }
 
 

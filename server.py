@@ -19,7 +19,7 @@ from mcp.types import ToolAnnotations
 from mcp.server.transport_security import TransportSecuritySettings
 from telethon import TelegramClient, utils, functions, types
 from telethon import __version__ as telethon_version
-from telethon.errors import (FloodWaitError, MessageNotModifiedError,
+from telethon.errors import (RPCError, FloodWaitError, MessageNotModifiedError,
                              MessageAuthorRequiredError, MessageEditTimeExpiredError)
 import uvicorn
 from admin_tools import (strict_reference, parse_schedule, check_expected, full_info,
@@ -35,7 +35,7 @@ from topics import (message_topic_id, read_topic, search_topic, prepare_topic_se
 from instance import CONFIG, PRIVATE
 
 BASE = Path(__file__).resolve().parent
-SERVICE_VERSION = '1.13.0'
+SERVICE_VERSION = '1.14.0'
 unread_mark.ENABLED = bool(CONFIG['auto_unread_mark'])
 LOCK = asyncio.Lock()
 CLIENT = None
@@ -241,7 +241,7 @@ async def mutate_once(request_id, payload, operation):
         database.close()
 
 
-from rich import input_rich, rich_kind, rich_record, send_rich
+from rich import blocks_to_markdown, full_rich, input_rich, rich_kind, rich_record, send_rich
 
 
 PARSE_MODES = {'plain': None, 'markdown': 'md', 'md': 'md', 'html': 'html'}
@@ -272,7 +272,7 @@ async def get_status() -> dict:
         me = await client.get_me()
         return {'service': CONFIG['name'], 'location': 'VPS', 'authorized': bool(me),
                 'account_id': me.id, 'account_name': utils.get_display_name(me),
-                'mac_required': False, 'service_version': SERVICE_VERSION, 'tool_count': 38,
+                'mac_required': False, 'service_version': SERVICE_VERSION, 'tool_count': 39,
                 'raw_mtproto': {'invoke_tool': 'invoke_mtproto', 'describe_tool': 'describe_mtproto',
                                 'usage_stats_tool': 'get_raw_usage_stats',
                                 'writes_require': ['confirm_write', 'request_id', 'expected_chat'],
@@ -392,10 +392,14 @@ async def read_messages(chat_id: int, limit: int = 30, before_message_id: int = 
         if topic_id:
             entity = await client.get_entity(strict_reference(chat_id))
             messages, next_before, scanned = await read_topic(client, entity, topic_id, limit, before_message_id)
+            for m in messages:
+                await full_rich(client, chat_id, m)
             return {'topic_id': topic_id, 'messages': [message_record(m) for m in messages],
                     'next_before_message_id': next_before,
                     **({'scanned_for_general': scanned} if scanned is not None else {})}
         messages = await client.get_messages(chat_id, limit=limit, offset_id=before_message_id)
+        for m in messages:
+            await full_rich(client, chat_id, m)
         return {'messages': [message_record(m) for m in messages],
                 'next_before_message_id': messages[-1].id if len(messages) == limit else None}
 
@@ -428,6 +432,7 @@ async def get_message(chat_id: int, message_id: int) -> dict:
     async with telegram() as client:
         message = await client.get_messages(chat_id, ids=message_id)
         require_message_chat(message, chat_id)
+        await full_rich(client, chat_id, message)
         return {'message': message_record(message)}
 
 
@@ -470,7 +475,8 @@ async def read_attachment(chat_id: int, message_id: int, offset: int = 0,
 async def send_message(chat_id: int, expected_chat: str, text: str, request_id: str,
                        reply_to_message_id: int = 0, schedule_at: str = '',
                        mentions: list[MentionSpec] | None = None, topic_id: int = 0,
-                       parse_mode: str = 'plain', link_preview: bool = False) -> dict:
+                       parse_mode: str = 'plain', link_preview: bool = False,
+                       rich_fallback: bool = False) -> dict:
     """Send only a user-authorized message. First verify the recipient using get_chat.
     expected_chat must exactly match the name or @username. Use a unique request_id per intended
     message and reuse it on retry to prevent duplicate sends. No link preview. Optional mentions
@@ -487,7 +493,8 @@ async def send_message(chat_id: int, expected_chat: str, text: str, request_id: 
     by Telegram itself: tables (GFM | a | b | pipes or <table>), headings (#, <h1>), bullet and
     numbered lists, block quotes, code blocks, dividers, plus inline formatting. Use rich modes for
     reports, comparisons and anything tabular. Rich messages cannot carry named mentions.
-    link_preview shows a preview of the first link."""
+    rich_fallback=true: if Telegram refuses the rich format in this chat, send the source as plain
+    text instead (the result says rich_fallback). link_preview shows a preview of the first link."""
     kind = rich_kind(parse_mode)
     if kind:
         if mentions:
@@ -503,16 +510,29 @@ async def send_message(chat_id: int, expected_chat: str, text: str, request_id: 
         async def send():
             when = parse_schedule(schedule_at) if schedule_at else None
             formatting = await input_mentions(client, entity, specs, verify_membership=True) if specs else []
+            fallback = None
             if kind:
-                message = await send_rich(client, entity, text, kind, reply_to=reply_to, schedule=when,
-                                          link_preview=link_preview)
+                try:
+                    message = await send_rich(client, entity, text, kind, reply_to=reply_to, schedule=when,
+                                              link_preview=link_preview)
+                except RPCError as error:
+                    if isinstance(error, FloodWaitError):
+                        raise
+                    if not rich_fallback or len(text) > 4096:
+                        raise ValueError(f'Telegram refused the rich message ({error.__class__.__name__}); '
+                                         'nothing was sent. Retry with rich_fallback=true for plain text.') from None
+                    fallback = error.__class__.__name__
+                    message = await client.send_message(entity, text, parse_mode=None, link_preview=link_preview,
+                                                        reply_to=reply_to, **({'schedule': when} if when else {}))
             else:
                 message = await client.send_message(entity, text, parse_mode=mode, link_preview=link_preview,
                                                     reply_to=reply_to,
                                                     **({'formatting_entities': formatting} if specs else {}),
                                                     **({'schedule': when} if when else {}))
             verification = {}
-            if kind and not when:
+            if fallback:
+                verification['rich_fallback'] = {'reason': fallback, 'sent_as': 'plain'}
+            elif kind and not when:
                 confirmed = await client.get_messages(entity, ids=message.id)
                 require_message_chat(confirmed, chat_id)
                 rich = rich_record(confirmed)
@@ -541,8 +561,30 @@ async def send_message(chat_id: int, expected_chat: str, text: str, request_id: 
         if topic_id:
             payload += ['topic', topic_id]
         if mode or link_preview or kind:
-            payload += ['format', mode or ('rich', kind), link_preview]
+            payload += ['format', mode or ('rich', kind, rich_fallback), link_preview]
         return await mutate_once(request_id, payload, send)
+
+
+@mcp.tool(annotations=WRITE)
+async def send_rich_message(chat_id: int, expected_chat: str, request_id: str, blocks: list[dict],
+                            reply_to_message_id: int = 0, topic_id: int = 0, schedule_at: str = '',
+                            fallback_plain: bool = False, link_preview: bool = False) -> dict:
+    """Send a user-authorized Telegram rich message (the modern editor format) built from blocks.
+    Same checks as send_message: verify the recipient with get_chat first; expected_chat must match;
+    reuse request_id on retry. blocks is a list of objects:
+      {"type":"heading","text":"…","level":1-6} · {"type":"paragraph","text":"…"}
+      {"type":"table","header":["Банк","Лимит"],"rows":[["Т-Банк","15 000 ₽"]],"align":["left","right"],"title":"…"}
+      {"type":"list"|"ordered_list","items":["…"]} · {"type":"quote","text":"…"}
+      {"type":"code","text":"…","language":"python"} · {"type":"divider"} · {"type":"markdown","text":"…"}
+    Text fields accept inline Markdown: **bold**, _italic_, ~~strike~~, `code`, [link](url).
+    Equivalent to send_message(parse_mode='rich_markdown'). fallback_plain=true sends the Markdown
+    source as plain text if Telegram refuses the rich format."""
+    markdown = blocks_to_markdown(blocks)
+    result = await send_message(chat_id, expected_chat, markdown, request_id,
+                                reply_to_message_id=reply_to_message_id, schedule_at=schedule_at,
+                                topic_id=topic_id, parse_mode='rich_markdown', link_preview=link_preview,
+                                rich_fallback=fallback_plain)
+    return {**result, 'markdown_source': markdown}
 
 
 @mcp.tool(annotations=WRITE)

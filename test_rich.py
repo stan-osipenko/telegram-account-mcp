@@ -107,6 +107,72 @@ class RichTests(unittest.IsolatedAsyncioTestCase):
                 await server.send_message(77, '@anna_test', '| a |\n|---|\n| 1 |', 'rich-0003',
                                           parse_mode='rich_markdown')
 
+    def test_blocks_to_markdown(self):
+        md = rich.blocks_to_markdown([
+            {'type': 'heading', 'text': 'Банки', 'level': 1},
+            {'type': 'table', 'header': ['Банк', 'Лимит'], 'rows': [['Т|Банк', '15 000 ₽'], ['Сбер']],
+             'align': ['left', 'right']},
+            {'type': 'paragraph', 'text': 'Итог **жирно**'},
+            {'type': 'ordered_list', 'items': ['a', 'b']}, {'type': 'divider'}])
+        self.assertEqual(md, '# Банки\n\n| Банк | Лимит |\n|:---|---:|\n| Т\\|Банк | 15 000 ₽ |\n| Сбер |  |'
+                             '\n\nИтог **жирно**\n\n1. a\n2. b\n\n---')
+        for bad in ([], [{'type': 'video'}], [{'type': 'table', 'header': ['a'], 'rows': [['1', '2']]}],
+                    [{'type': 'heading', 'text': 'x', 'level': 9}],
+                    [{'type': 'table', 'header': ['a', 'b'], 'rows': [], 'align': ['up', 'left']}]):
+            with self.assertRaises(ValueError):
+                rich.blocks_to_markdown(bad)
+
+    def test_markdown_rendering_of_read_blocks(self):
+        record = rich.rich_record(NS(rich_message=STORED))
+        self.assertEqual(record['markdown'], '# Отчёт\n\n| Объект | Сумма |\n|---|---|\n| Брестская | 1 000 |\n\n- аб')
+
+    async def test_send_rich_message_tool(self):
+        fake = Fake()
+        with patch.object(server, 'CLIENT', fake):
+            result = await server.send_rich_message(77, '@anna_test', 'rich-0004', [
+                {'type': 'table', 'header': ['A', 'B'], 'rows': [['1', '2']]},
+                {'type': 'paragraph', 'text': 'под таблицей'}])
+        self.assertTrue(result['sent'])
+        self.assertIn('| A | B |', result['markdown_source'])
+        request = next(r for r in fake.requests if isinstance(r, functions.messages.SendMessageRequest))
+        self.assertEqual(request.rich_message.markdown, result['markdown_source'])
+
+    async def test_fallback_to_plain_only_when_asked(self):
+        from telethon.errors import RPCError
+
+        class Refusing(Fake):
+            def __init__(self):
+                super().__init__()
+                self.plain = []
+            async def __call__(self, request):
+                if isinstance(request, functions.messages.SendMessageRequest):
+                    raise RPCError(request, 'RICH_MESSAGE_FORBIDDEN', 400)
+                return True
+            async def send_message(self, entity, text, **kwargs):
+                self.plain.append((text, kwargs))
+                return NS(id=12, date=NOW)
+        source = '| a | b |\n|---|---|\n| 1 | 2 |'
+        fake = Refusing()
+        with patch.object(server, 'CLIENT', fake):
+            with self.assertRaisesRegex(ValueError, 'nothing was sent'):
+                await server.send_message(77, '@anna_test', source, 'rich-0005', parse_mode='rich_markdown')
+            result = await server.send_message(77, '@anna_test', source, 'rich-0006', parse_mode='rich_markdown',
+                                               rich_fallback=True)
+        self.assertEqual(result['rich_fallback']['sent_as'], 'plain')
+        self.assertEqual(fake.plain, [(source, {'parse_mode': None, 'link_preview': False, 'reply_to': None})])
+
+    async def test_partial_rich_is_completed_on_read(self):
+        partial = types.RichMessage(blocks=[types.PageBlockParagraph(types.TextPlain('часть'))], photos=[], documents=[], part=True)
+
+        class Reader(Fake):
+            async def __call__(self, request):
+                self.requests.append(request)
+                return STORED
+        fake, message = Reader(), NS(id=5, rich_message=partial)
+        await rich.full_rich(fake, 77, message)
+        self.assertIs(message.rich_message, STORED)
+        self.assertIsInstance(fake.requests[0], functions.messages.GetRichMessageRequest)
+
     def test_edit_message_rejects_rich(self):
         with self.assertRaisesRegex(ValueError, 'send_message only'):
             server.parse_mode_of('rich_markdown')

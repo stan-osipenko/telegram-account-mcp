@@ -35,7 +35,7 @@ from topics import (message_topic_id, read_topic, search_topic, prepare_topic_se
 from instance import CONFIG, PRIVATE
 
 BASE = Path(__file__).resolve().parent
-SERVICE_VERSION = '1.12.0'
+SERVICE_VERSION = '1.13.0'
 unread_mark.ENABLED = bool(CONFIG['auto_unread_mark'])
 LOCK = asyncio.Lock()
 CLIENT = None
@@ -200,7 +200,8 @@ def message_record(message):
                            'chosen_by_me': getattr(r, 'chosen_order', None) is not None}
                           for r in (getattr(getattr(message, 'reactions', None), 'results', None) or [])],
             'attachment': {'name': message.file.name, 'size': message.file.size,
-                           'mime_type': message.file.mime_type} if message.file else None}
+                           'mime_type': message.file.mime_type} if message.file else None,
+            **({'rich': rich} if (rich := rich_record(message)) else {})}
 
 
 def limit_check(value, maximum=100):
@@ -240,6 +241,9 @@ async def mutate_once(request_id, payload, operation):
         database.close()
 
 
+from rich import input_rich, rich_kind, rich_record, send_rich
+
+
 PARSE_MODES = {'plain': None, 'markdown': 'md', 'md': 'md', 'html': 'html'}
 
 
@@ -247,7 +251,7 @@ def parse_mode_of(parse_mode, mentions_used=False):
     """'plain' (default), 'markdown' or 'html'. Named mentions need plain text with explicit ranges."""
     key = (parse_mode or 'plain').lower()
     if key not in PARSE_MODES:
-        raise ValueError("parse_mode must be 'plain', 'markdown' or 'html'")
+        raise ValueError("parse_mode must be 'plain', 'markdown' or 'html' (rich_markdown/rich_html: send_message only)")
     if PARSE_MODES[key] and mentions_used:
         raise ValueError("mentions require parse_mode='plain' (ranges refer to the literal text)")
     return PARSE_MODES[key]
@@ -478,22 +482,43 @@ async def send_message(chat_id: int, expected_chat: str, text: str, request_id: 
     Telegram message, not assistant tasks. Scheduled IDs belong to scheduled history, not normal history.
     Optional topic_id (from list_topics; 1 = General) posts into that forum topic; a
     reply_to_message_id must then be in the same topic. The topic is read back and verified.
-    parse_mode: 'plain' (default), 'markdown' or 'html'. link_preview shows a preview of the first link."""
-    if not text.strip() or len(text) > 4096:
+    parse_mode: 'plain' (default), 'markdown' or 'html' (classic entities: bold, italic, code, links,
+    spoiler, quote); or 'rich_markdown' / 'rich_html' — Telegram's modern rich editor format, parsed
+    by Telegram itself: tables (GFM | a | b | pipes or <table>), headings (#, <h1>), bullet and
+    numbered lists, block quotes, code blocks, dividers, plus inline formatting. Use rich modes for
+    reports, comparisons and anything tabular. Rich messages cannot carry named mentions.
+    link_preview shows a preview of the first link."""
+    kind = rich_kind(parse_mode)
+    if kind:
+        if mentions:
+            raise ValueError('mentions are not supported with rich parse modes')
+        input_rich(text, kind)  # validates length before any network call
+    elif not text.strip() or len(text) > 4096:
         raise ValueError('Message must contain 1–4096 characters')
-    specs = normalize_mentions(text, mentions)
-    mode = parse_mode_of(parse_mode, bool(specs))
+    specs = [] if kind else normalize_mentions(text, mentions)
+    mode = None if kind else parse_mode_of(parse_mode, bool(specs))
     async with telegram() as client:
         entity, record = await checked_entity(client, chat_id, expected_chat)
         topic, reply_to = await prepare_topic_send(client, entity, chat_id, topic_id, reply_to_message_id)
         async def send():
             when = parse_schedule(schedule_at) if schedule_at else None
             formatting = await input_mentions(client, entity, specs, verify_membership=True) if specs else []
-            message = await client.send_message(entity, text, parse_mode=mode, link_preview=link_preview,
-                                                reply_to=reply_to,
-                                                **({'formatting_entities': formatting} if specs else {}),
-                                                **({'schedule': when} if when else {}))
+            if kind:
+                message = await send_rich(client, entity, text, kind, reply_to=reply_to, schedule=when,
+                                          link_preview=link_preview)
+            else:
+                message = await client.send_message(entity, text, parse_mode=mode, link_preview=link_preview,
+                                                    reply_to=reply_to,
+                                                    **({'formatting_entities': formatting} if specs else {}),
+                                                    **({'schedule': when} if when else {}))
             verification = {}
+            if kind and not when:
+                confirmed = await client.get_messages(entity, ids=message.id)
+                require_message_chat(confirmed, chat_id)
+                rich = rich_record(confirmed)
+                if not rich:
+                    raise RuntimeError('Telegram stored the message without rich content; inspect it')
+                verification['rich'] = {'verified': True, 'block_types': [b['type'] for b in rich['blocks']]}
             if specs:
                 if when:
                     scheduled = await client(functions.messages.GetScheduledMessagesRequest(entity, id=[message.id]))
@@ -515,8 +540,8 @@ async def send_message(chat_id: int, expected_chat: str, text: str, request_id: 
             payload += ['mentions', mention_signature(specs)]
         if topic_id:
             payload += ['topic', topic_id]
-        if mode or link_preview:
-            payload += ['format', mode, link_preview]
+        if mode or link_preview or kind:
+            payload += ['format', mode or ('rich', kind), link_preview]
         return await mutate_once(request_id, payload, send)
 
 

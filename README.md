@@ -28,6 +28,17 @@ ChatGPT and Claude remember a connector's tool list when it is connected or refr
 
 A gateway call goes through the same registered tool as a direct call, with the same validation, chat resolution, `expected_chat`, `request_id` and quotas. Refresh is still useful once in a while so that new tools also appear as first-class tools, but nothing waits for it.
 
+### Keeping up with Telegram
+
+Telegram adds features all the time. `feature_watch.py` runs daily on the server (cron) and compares Telegram's published API schema, the Telegram blog and the latest Telethon release with what this connector has. When something is new it sends a short note to Saved Messages and stores a report that `get_telegram_updates` serves. A weekly adoption agent reads that report, upgrades Telethon or adds a dedicated tool when it is worth it, and adds the feature to `messaging_guide.md`.
+
+`get_messaging_guide` serves that guide: which Telegram features to use by default when writing on the owner's behalf (tables for comparisons, in-place edits, reactions instead of empty replies). Assistants read it before writing, so new features appear in everyday messages without a separate request.
+
+```bash
+# on the server, in the service directory
+.venv/bin/python feature_watch.py --notify
+```
+
 ### Universal MTProto access
 
 Telegram ships new API methods all the time. Writing a dedicated tool for each one never keeps up. `invoke_mtproto` calls any method that the installed Telethon knows, so updating Telethon makes new Telegram features available right away.

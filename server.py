@@ -35,7 +35,7 @@ from topics import (message_topic_id, read_topic, search_topic, prepare_topic_se
 from instance import CONFIG, PRIVATE
 
 BASE = Path(__file__).resolve().parent
-SERVICE_VERSION = '1.16.0'
+SERVICE_VERSION = '1.17.0'
 unread_mark.ENABLED = bool(CONFIG['auto_unread_mark'])
 LOCK = asyncio.Lock()
 CLIENT = None
@@ -107,6 +107,8 @@ mcp = FastMCP(CONFIG['name'], stateless_http=True, json_response=True,
               'For anything no dedicated tool covers, find the Telegram API method with describe_mtproto and call it '
               'with invoke_mtproto. Reads run at once; writes only after the owner explicitly authorized that exact '
               'action (confirm_write=true, request_id, expected_chat). Always prefer a dedicated tool when one exists. '
+              'Before writing anything on the owner\'s behalf longer than a short reply, read get_messaging_guide '
+              'once per conversation and use its default formats (it grows as Telegram adds features). '
               'Your tool list may be cached from an older version of this connector: if a tool or parameter '
               'you need is missing, call list_tools_live and run it through call_read_tool or call_tool.')
 
@@ -771,6 +773,20 @@ describe_mtproto, invoke_mtproto, get_raw_usage_stats = register_raw_tools(
     mcp, PRIVATE, telegram, checked_entity, mutate_once, READ, WRITE)
 from voice import register_voice_tools
 transcribe_voice = register_voice_tools(mcp, PRIVATE, telegram, READ)
+from feature_watch import register_feature_watch_tool
+get_telegram_updates = register_feature_watch_tool(mcp, PRIVATE, READ)
+GUIDE = Path(__file__).resolve().parent / 'messaging_guide.md'
+
+
+@mcp.tool(annotations=READ)
+async def get_messaging_guide() -> dict:
+    """How to write in Telegram on the owner's behalf: which Telegram features to use by default
+    (rich tables for comparisons, headings and lists for reports, in-place edits, reactions instead of
+    empty replies) and a log of newly supported features. Read it once per conversation before writing
+    anything longer than a short reply. A format never authorizes a message by itself."""
+    return {'guide': GUIDE.read_text(), 'service_version': SERVICE_VERSION}
+
+
 from tool_gateway import register_gateway_tools  # Register last: the gateway reaches every tool above.
 list_tools_live, call_read_tool, call_tool = register_gateway_tools(mcp, SERVICE_VERSION, READ, WRITE)
 

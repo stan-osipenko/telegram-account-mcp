@@ -173,9 +173,63 @@ class RichTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(message.rich_message, STORED)
         self.assertIsInstance(fake.requests[0], functions.messages.GetRichMessageRequest)
 
-    def test_edit_message_rejects_rich(self):
-        with self.assertRaisesRegex(ValueError, 'send_message only'):
+    def test_parse_mode_of_points_to_rich_tools(self):
+        with self.assertRaisesRegex(ValueError, 'edit_message only'):
             server.parse_mode_of('rich_markdown')
+
+    async def test_edit_rich_in_place(self):
+        class Editor(Fake):
+            def __init__(self):
+                super().__init__()
+                self.current = NS(id=11, chat_id=77, out=True, action=None, media=None, message='',
+                                  web_preview=None, rich_message=STORED)
+            async def get_messages(self, entity, ids=None):
+                return self.current
+            async def __call__(self, request):
+                self.requests.append(request)
+                return True
+        fake = Editor()
+        current = rich.rich_record(fake.current)['markdown']
+        blocks = [{'type': 'table', 'header': ['Объект', 'Сумма'], 'rows': [['Брестская', '2 000']]}]
+        with patch.object(server, 'CLIENT', fake), patch.object(server, 'message_record', lambda m: {'id': m.id}):
+            with self.assertRaisesRegex(ValueError, 'changed since'):
+                await server.edit_rich_message(77, '@anna_test', 11, 'старый текст', blocks)
+            result = await server.edit_rich_message(77, '@anna_test', 11, current, blocks)
+            self.assertTrue(result['edited'])
+            self.assertEqual(result['rich']['block_types'], ['Heading1', 'Table', 'List'])
+            request = next(r for r in fake.requests if isinstance(r, functions.messages.EditMessageRequest))
+            self.assertEqual(request.id, 11)
+            self.assertEqual(request.message, '')
+            self.assertEqual(request.rich_message.markdown, result['markdown_source'])
+            self.assertTrue(request.no_webpage)
+            again = await server.edit_rich_message(77, '@anna_test', 11, current, blocks)
+            self.assertTrue(again['already_matches'])
+            with self.assertRaisesRegex(ValueError, 'mentions'):
+                await server.edit_message(77, '@anna_test', 11, 'x', current, parse_mode='rich_markdown',
+                                          mentions=[{'user_id': 77, 'expected_user': 'Анна', 'offset': 0, 'length': 1}])
+            fake.current = NS(id=11, chat_id=77, out=True, action=None, media=types.MessageMediaPhoto(),
+                              message='подпись', web_preview=None, rich_message=None)
+            with self.assertRaisesRegex(ValueError, 'attachments'):
+                await server.edit_message(77, '@anna_test', 11, '| a |\n|---|\n| 1 |', 'подпись',
+                                          parse_mode='rich_markdown')
+
+    async def test_plain_message_becomes_rich(self):
+        class Editor(Fake):
+            def __init__(self):
+                super().__init__()
+                self.current = NS(id=12, chat_id=77, out=True, action=None, media=None, message='было',
+                                  web_preview=None, rich_message=None)
+            async def get_messages(self, entity, ids=None):
+                return self.current
+            async def __call__(self, request):
+                self.requests.append(request)
+                if isinstance(request, functions.messages.EditMessageRequest):
+                    self.current = NS(**{**vars(self.current), 'message': '', 'rich_message': STORED})
+                return True
+        fake = Editor()
+        with patch.object(server, 'CLIENT', fake), patch.object(server, 'message_record', lambda m: {'id': m.id}):
+            result = await server.edit_message(77, '@anna_test', 12, '# Отчёт', 'было', parse_mode='rich_markdown')
+        self.assertTrue(result['edited'])
 
 
 if __name__ == '__main__':

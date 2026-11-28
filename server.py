@@ -35,7 +35,7 @@ from topics import (message_topic_id, read_topic, search_topic, prepare_topic_se
 from instance import CONFIG, PRIVATE
 
 BASE = Path(__file__).resolve().parent
-SERVICE_VERSION = '1.15.0'
+SERVICE_VERSION = '1.16.0'
 unread_mark.ENABLED = bool(CONFIG['auto_unread_mark'])
 LOCK = asyncio.Lock()
 CLIENT = None
@@ -92,7 +92,8 @@ mcp = FastMCP(CONFIG['name'], stateless_http=True, json_response=True,
               'Reads do not mark messages read. '
               + UNREAD_NOTE +
               'Otherwise use mark_chat_unread only when the user requests changing the manual unread reminder. '
-              'Use edit_message for authorized corrections to own sent text/captions, after get_message. '
+              'Use edit_message for authorized corrections to own sent text/captions, after get_message; '
+              'rich messages (tables) are edited in place with edit_rich_message or edit_message rich modes. '
               'For personal group mentions use get_chat_members numeric IDs and send_message mentions; '
               'offset and length are UTF-16 code units. Username and phone are not needed. '
               'edit_message preserves existing named mentions unless an explicit replacement list is supplied. '
@@ -253,7 +254,7 @@ def parse_mode_of(parse_mode, mentions_used=False):
     """'plain' (default), 'markdown' or 'html'. Named mentions need plain text with explicit ranges."""
     key = (parse_mode or 'plain').lower()
     if key not in PARSE_MODES:
-        raise ValueError("parse_mode must be 'plain', 'markdown' or 'html' (rich_markdown/rich_html: send_message only)")
+        raise ValueError("parse_mode must be 'plain', 'markdown' or 'html' (rich_markdown/rich_html: send_message and edit_message only)")
     if PARSE_MODES[key] and mentions_used:
         raise ValueError("mentions require parse_mode='plain' (ranges refer to the literal text)")
     return PARSE_MODES[key]
@@ -283,7 +284,7 @@ async def get_status() -> dict:
                                      'requires_username_or_phone': False,
                                      'edit_default': 'preserve_unmodified_named_mentions',
                                      'verification_entity': 'MessageEntityMentionName'},
-                'message_operations': ['send_message', 'edit_message', 'delete_messages', 'pin_message', 'set_reaction'],
+                'message_operations': ['send_message', 'send_rich_message', 'edit_message', 'edit_rich_message', 'delete_messages', 'pin_message', 'set_reaction'],
                 'dialog_operations': ['mark_chat_unread', 'mark_read'], 'auto_unread_mark_after_send': unread_mark.ENABLED,
                 'admin_operations': ['search_people', 'get_chat_members', 'create_chat', 'add_chat_members',
                                      'remove_chat_member', 'create_invite_link', 'edit_chat_info', 'set_chat_photo',
@@ -589,6 +590,72 @@ async def send_rich_message(chat_id: int, expected_chat: str, request_id: str, b
     return {**result, 'markdown_source': markdown}
 
 
+RICH_EDITS = 'rich-edits.json'
+
+
+def _rich_edit_log(key, source=None):
+    """Last rich source applied per message, so a retried edit is a verified no-op."""
+    path = PRIVATE / RICH_EDITS
+    try:
+        log = json.loads(path.read_text())
+    except (OSError, ValueError):
+        log = {}
+    if source is None:
+        return log.get(key)
+    log[key] = hashlib.sha256(source.encode()).hexdigest()
+    log = dict(list(log.items())[-500:])
+    path.write_text(json.dumps(log))
+
+
+async def edit_rich(chat_id, expected_chat, message_id, source, expected_text, kind, link_preview):
+    request = input_rich(source, kind, link_preview is not False)  # validates before any network call
+    key = f'{chat_id}:{message_id}'
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    async with telegram() as client:
+        entity, record = await checked_entity(client, chat_id, expected_chat)
+        before = await client.get_messages(entity, ids=message_id)
+        require_message_chat(before, chat_id)
+        if not before:
+            raise ValueError('Message does not exist; no message was changed')
+        if not before.out or getattr(before, 'action', None):
+            raise ValueError('Only own sent messages can be edited')
+        if before.media and not isinstance(before.media, types.MessageMediaWebPage):
+            raise ValueError('Messages with attachments cannot become rich; edit the caption with a plain mode')
+        await full_rich(client, entity, before)
+        current_rich = rich_record(before)
+        current = current_rich['markdown'] if current_rich else (before.message or '')
+        if current_rich and _rich_edit_log(key) == digest:
+            return {'edited': False, 'already_matches': True, 'verified': True,
+                    'chat': record, 'message': message_record(before)}
+        if current != expected_text:
+            raise ValueError('Message changed since it was read; fetch it again with get_message and pass '
+                             'its text (or rich.markdown for a rich message) as expected_text')
+        preview = bool(before.web_preview) if link_preview is None else link_preview
+        request.noautolink = None if preview else True
+        try:
+            await client(functions.messages.EditMessageRequest(
+                peer=entity, id=message_id, message='', rich_message=request, no_webpage=not preview))
+        except MessageNotModifiedError:
+            pass
+        except MessageAuthorRequiredError:
+            raise ValueError('Telegram does not permit editing this message for this account') from None
+        except MessageEditTimeExpiredError:
+            raise ValueError('Telegram editing time limit has expired; no replacement was sent') from None
+        except RPCError as error:
+            raise ValueError(f'Telegram refused the rich edit ({error.__class__.__name__}); the message is unchanged') from None
+        after = await client.get_messages(entity, ids=message_id)
+        require_message_chat(after, chat_id)
+        if after:
+            await full_rich(client, entity, after)
+        rich = rich_record(after) if after else None
+        if not rich:
+            raise RuntimeError('Telegram did not confirm rich content after the edit; inspect the message')
+        _rich_edit_log(key, source)
+        return {'edited': True, 'verified': True, 'chat': record, 'message': message_record(after),
+                'rich': {'verified': True, 'block_types': [b['type'] for b in rich['blocks']]},
+                **(await flag_unread(client, entity))}
+
+
 @mcp.tool(annotations=WRITE)
 async def edit_message(chat_id: int, expected_chat: str, message_id: int,
                        text: str, expected_text: str, mentions: list[MentionSpec] | None = None,
@@ -604,9 +671,16 @@ async def edit_message(chat_id: int, expected_chat: str, message_id: int,
     Other existing formatting is replaced by plain text. Maximum 4096 characters
     for text, 1024 for a file caption; empty text is allowed only to remove a caption.
     parse_mode: 'plain' (default), 'markdown' or 'html'; then text is the formatted source and the
-    stored plain text is verified. link_preview: keep the current preview state when omitted."""
+    stored plain text is verified. link_preview: keep the current preview state when omitted.
+    parse_mode 'rich_markdown' / 'rich_html' replaces the message with a rich one (tables, headings,
+    lists), also for a message that was rich already. For a rich message expected_text is the
+    rich.markdown that get_message returns; for a plain one its text. No mentions in rich mode."""
     if message_id <= 0:
         raise ValueError('message_id must be positive')
+    if kind := rich_kind(parse_mode):
+        if mentions:
+            raise ValueError('mentions are not supported with rich parse modes')
+        return await edit_rich(chat_id, expected_chat, message_id, text, expected_text, kind, link_preview)
     mode = parse_mode_of(parse_mode, bool(mentions))
     source, text = text, plain_text_of(text, mode)
     async with telegram() as client:
@@ -662,6 +736,19 @@ async def edit_message(chat_id: int, expected_chat: str, message_id: int,
         verify_mentions(after, text, specs)
         return {'edited':True, 'verified':True, 'chat':record, 'message':message_record(after),
                 'attachment_unchanged':True, 'mentions_verified':True, **(await flag_unread(client, entity))}
+
+
+@mcp.tool(annotations=WRITE)
+async def edit_rich_message(chat_id: int, expected_chat: str, message_id: int, expected_text: str,
+                            blocks: list[dict], link_preview: bool = False) -> dict:
+    """Replace an OWN sent message with a rich one built from blocks (same block format as
+    send_rich_message), only with user authorization. Keeps the message ID: no new message, no
+    new notification. First use get_message and pass its rich.markdown (rich message) or text
+    (plain message) as expected_text. Equivalent to edit_message(parse_mode='rich_markdown')."""
+    markdown = blocks_to_markdown(blocks)
+    result = await edit_message(chat_id, expected_chat, message_id, markdown, expected_text,
+                                parse_mode='rich_markdown', link_preview=link_preview)
+    return {**result, 'markdown_source': markdown}
 
 
 from attachments import register_attachment_tools

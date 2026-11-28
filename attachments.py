@@ -213,13 +213,19 @@ def register_attachment_tools(mcp, private, telegram, checked_entity, mutate_onc
                     if not getattr(message, 'voice', None):
                         raise RuntimeError('Telegram did not register the file as a voice message; inspect the chat')
                 elif send_as == 'photo':
-                    message = await client.send_file(entity, str(path), caption=caption, parse_mode=mode,
+                    # Staged files are stored as 'data' with no extension, so Telegram would get a nameless
+                    # octet-stream document. Upload under the original name to make it a real photo.
+                    name = 'photo' + (Path(meta['filename']).suffix.lower() or '.jpg')
+                    uploaded = await client.upload_file(str(path), file_name=name)
+                    message = await client.send_file(entity, uploaded, caption=caption, parse_mode=mode,
                         force_document=False, reply_to=reply_to)
+                    if not getattr(message, 'photo', None):
+                        raise RuntimeError('Telegram did not register the image as a photo; inspect the chat')
                 else:
                     message = await client.send_file(entity, str(path), caption=caption, parse_mode=mode,
                         mime_type=meta['mime_type'], force_document=True, reply_to=reply_to,
                         attributes=[DocumentAttributeFilename(meta['filename'])])
-                extra = {'voice': True} if as_voice else {}
+                extra = {'voice': True} if as_voice else {'photo': True} if send_as == 'photo' else {}
                 if topic:
                     await verify_topic(client, entity, chat_id, message.id, topic_id)
                     extra['topic'] = {**topic, 'verified': True}

@@ -147,6 +147,40 @@ class MutationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('voice', plain)
                 self.assertTrue(calls[-1]['force_document'])
 
+    async def test_send_file_as_photo_uses_real_name(self):
+        import base64, hashlib
+        tools = {}
+        class Registry:
+            def tool(self,**kwargs):
+                def register(function):
+                    tools[function.__name__]=function
+                    return function
+                return register
+        calls = []
+        async def upload_file(path, file_name=None):
+            calls.append(('upload', file_name))
+            return SimpleNamespace(name=file_name)
+        async def send_file(entity, file, **kwargs):
+            calls.append(('send', file, kwargs))
+            return SimpleNamespace(id=8, date=__import__('datetime').datetime(2026,11,28),
+                                   photo=object() if getattr(file, 'name', '').endswith('.png') else None)
+        client = SimpleNamespace(send_file=send_file, upload_file=upload_file)
+        @asynccontextmanager
+        async def telegram(): yield client
+        async def checked(client,chat_id,expected):
+            return SimpleNamespace(),{'chat_id':chat_id}
+        async def mutate(key,payload,operation):
+            return await operation()
+        data = b'\x89PNG-fake'
+        with tempfile.TemporaryDirectory() as directory:
+            register_attachment_tools(Registry(),Path(directory),telegram,checked,mutate,server.READ,server.WRITE)
+            up = await tools['begin_attachment_upload']('scheme.png', len(data), hashlib.sha256(data).hexdigest(), 'image/png')
+            await tools['append_attachment_upload'](up['upload_id'], 0, base64.b64encode(data).decode())
+            result = await tools['send_file'](5, 'x', up['upload_id'], 'photo-test-png', send_as='photo')
+            self.assertTrue(result['photo'])
+            self.assertEqual(calls[0], ('upload', 'photo.png'))
+            self.assertFalse(calls[1][2]['force_document'])
+
 
 if __name__ == '__main__':
     unittest.main()

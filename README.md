@@ -15,7 +15,18 @@ It is built for daily, real use by one owner. Safety checks are part of each too
 | Administration | `create_chat` (also forums), `create_topic`, `add_chat_members`, `remove_chat_member`, `create_invite_link`, `edit_chat_info`, `join_chat`, `set_chat_photo`, `delete_chat_photo`, `set_bot_photo` |
 | Voice | `transcribe_voice`: Telegram's own transcription (Premium) first, local faster-whisper as fallback |
 | **Everything else** | `describe_mtproto` + `invoke_mtproto`: call **any** Telegram API method by name, e.g. `messages.getMessageReactionsList`, `stories.getPeerStories`, `phone.requestCall` |
+| New versions without "Refresh" | `list_tools_live` + `call_read_tool` / `call_tool`: reach tools and parameters added after the client cached its tool list |
 | Self-improvement | `get_raw_usage_stats` shows which raw methods are used often and are worth turning into dedicated tools |
+
+### New versions without pressing "Refresh"
+
+ChatGPT and Claude remember a connector's tool list when it is connected or refreshed. A tool or parameter added later stays invisible until somebody presses "Refresh" in the connector settings. Three gateway tools never change their names or parameters, so a client that has them reaches everything deployed later:
+
+- `list_tools_live` — the catalog as deployed now, with full parameter schemas (`name=...` for one tool);
+- `call_read_tool(name, arguments)` — runs a read-only tool, refuses anything that changes data;
+- `call_tool(name, arguments)` — runs any tool.
+
+A gateway call goes through the same registered tool as a direct call, with the same validation, chat resolution, `expected_chat`, `request_id` and quotas. Refresh is still useful once in a while so that new tools also appear as first-class tools, but nothing waits for it.
 
 ### Universal MTProto access
 

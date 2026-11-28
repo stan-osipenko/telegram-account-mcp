@@ -35,7 +35,7 @@ from topics import (message_topic_id, read_topic, search_topic, prepare_topic_se
 from instance import CONFIG, PRIVATE
 
 BASE = Path(__file__).resolve().parent
-SERVICE_VERSION = '1.14.0'
+SERVICE_VERSION = '1.15.0'
 unread_mark.ENABLED = bool(CONFIG['auto_unread_mark'])
 LOCK = asyncio.Lock()
 CLIENT = None
@@ -105,7 +105,9 @@ mcp = FastMCP(CONFIG['name'], stateless_http=True, json_response=True,
               'and send_message/send_file; topic_id 1 is General. Every message record has topic_id. '
               'For anything no dedicated tool covers, find the Telegram API method with describe_mtproto and call it '
               'with invoke_mtproto. Reads run at once; writes only after the owner explicitly authorized that exact '
-              'action (confirm_write=true, request_id, expected_chat). Always prefer a dedicated tool when one exists.')
+              'action (confirm_write=true, request_id, expected_chat). Always prefer a dedicated tool when one exists. '
+              'Your tool list may be cached from an older version of this connector: if a tool or parameter '
+              'you need is missing, call list_tools_live and run it through call_read_tool or call_tool.')
 
 
 # Every tool accepts a chat as a numeric ID, a numeric string, "me", an exact @username or t.me/username
@@ -272,7 +274,7 @@ async def get_status() -> dict:
         me = await client.get_me()
         return {'service': CONFIG['name'], 'location': 'VPS', 'authorized': bool(me),
                 'account_id': me.id, 'account_name': utils.get_display_name(me),
-                'mac_required': False, 'service_version': SERVICE_VERSION, 'tool_count': 39,
+                'mac_required': False, 'service_version': SERVICE_VERSION, 'tool_count': len(mcp._tool_manager.list_tools()),
                 'raw_mtproto': {'invoke_tool': 'invoke_mtproto', 'describe_tool': 'describe_mtproto',
                                 'usage_stats_tool': 'get_raw_usage_stats',
                                 'writes_require': ['confirm_write', 'request_id', 'expected_chat'],
@@ -682,6 +684,8 @@ describe_mtproto, invoke_mtproto, get_raw_usage_stats = register_raw_tools(
     mcp, PRIVATE, telegram, checked_entity, mutate_once, READ, WRITE)
 from voice import register_voice_tools
 transcribe_voice = register_voice_tools(mcp, PRIVATE, telegram, READ)
+from tool_gateway import register_gateway_tools  # Register last: the gateway reaches every tool above.
+list_tools_live, call_read_tool, call_tool = register_gateway_tools(mcp, SERVICE_VERSION, READ, WRITE)
 
 
 if __name__ == '__main__':
